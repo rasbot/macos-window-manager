@@ -2,18 +2,24 @@ import AppKit
 import ApplicationServices
 import DockCore
 
+/// Watches mouse drags and shows the zone overlay while a window is being dragged
+/// with the activation modifier held.
 final class WindowDragMonitor {
     var isEnabled = true
-    var onStatusChange: ((String) -> Void)?
-    let profileStore = ProfileStore()
 
+    private let controller: DockController
     private let overlay = ZoneOverlayController()
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var candidateWindow: AccessibleWindow?
     private var initialFrame: CGRect?
     private var selectedZoneIndex: Int?
+    private var dragScreen: NSScreen?
     private var isDockingDrag = false
+
+    init(controller: DockController) {
+        self.controller = controller
+    }
 
     deinit {
         stop()
@@ -54,7 +60,7 @@ final class WindowDragMonitor {
             callback: callback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
-            onStatusChange?("Unable to monitor drags")
+            controller.report("Unable to monitor drags")
             return false
         }
 
@@ -63,7 +69,7 @@ final class WindowDragMonitor {
         CGEvent.tapEnable(tap: tap, enable: true)
         eventTap = tap
         runLoopSource = source
-        onStatusChange?("Ready — hold Shift while dragging")
+        controller.report("Ready — \(controller.settings.activationModifier.dragHint)")
         return true
     }
 
@@ -79,6 +85,11 @@ final class WindowDragMonitor {
         resetDrag()
     }
 
+    /// Drops any overlay and in-flight drag state, used when displays change.
+    func cancelActiveDrag() {
+        resetDrag()
+    }
+
     private func handle(type: CGEventType, quartzPoint: CGPoint, flags: CGEventFlags) {
         guard isEnabled else {
             resetDrag()
@@ -88,12 +99,13 @@ final class WindowDragMonitor {
         switch type {
         case .leftMouseDown:
             guard AccessibilityPermission.isGranted else {
-                onStatusChange?("Accessibility permission required")
+                controller.report("Accessibility permission required")
                 return
             }
             candidateWindow = AccessibleWindowResolver.window(at: quartzPoint)
             initialFrame = candidateWindow?.frame
             selectedZoneIndex = nil
+            dragScreen = nil
             isDockingDrag = false
 
         case .leftMouseDragged, .flagsChanged:
@@ -108,7 +120,7 @@ final class WindowDragMonitor {
     }
 
     private func updateDrag(quartzPoint: CGPoint, flags: CGEventFlags) {
-        guard flags.contains(.maskShift),
+        guard controller.settings.activationModifier.isSatisfied(by: flags),
               let candidateWindow,
               let initialFrame,
               let currentFrame = candidateWindow.frame,
@@ -117,6 +129,7 @@ final class WindowDragMonitor {
             if isDockingDrag {
                 overlay.hide()
                 selectedZoneIndex = nil
+                dragScreen = nil
                 isDockingDrag = false
             }
             return
@@ -126,11 +139,14 @@ final class WindowDragMonitor {
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(appKitPoint) }) else {
             return
         }
-        let display = DisplayDescriptor(screen: screen)
-        let layout = profileStore.layout(for: display)
 
         isDockingDrag = true
-        selectedZoneIndex = overlay.show(on: screen, layout: layout, pointer: appKitPoint)
+        dragScreen = screen
+        selectedZoneIndex = overlay.show(
+            on: screen,
+            layout: controller.layout(for: screen),
+            pointer: appKitPoint
+        )
     }
 
     private func finishDrag() {
@@ -138,19 +154,12 @@ final class WindowDragMonitor {
 
         guard isDockingDrag,
               let selectedZoneIndex,
-              overlay.globalZoneFrames.indices.contains(selectedZoneIndex),
               let candidateWindow,
-              let coordinateConverter = coordinateConverter() else {
+              let dragScreen else {
             return
         }
 
-        let appKitFrame = overlay.globalZoneFrames[selectedZoneIndex]
-        let accessibilityFrame = coordinateConverter.accessibilityRect(fromAppKit: appKitFrame)
-        if candidateWindow.setFrame(accessibilityFrame) {
-            onStatusChange?("Docked in zone \(selectedZoneIndex + 1)")
-        } else {
-            onStatusChange?("This window could not be resized")
-        }
+        controller.dock(window: candidateWindow, intoZoneAt: selectedZoneIndex, on: dragScreen)
     }
 
     private func resetDrag() {
@@ -158,6 +167,7 @@ final class WindowDragMonitor {
         candidateWindow = nil
         initialFrame = nil
         selectedZoneIndex = nil
+        dragScreen = nil
         isDockingDrag = false
     }
 
@@ -168,30 +178,5 @@ final class WindowDragMonitor {
     private func coordinateConverter() -> ScreenCoordinateConverter? {
         guard let primaryScreen = NSScreen.screens.first else { return nil }
         return ScreenCoordinateConverter(primaryScreenTop: primaryScreen.frame.maxY)
-    }
-
-    func selectedLayout(for screen: NSScreen) -> ZoneLayout {
-        profileStore.layout(for: DisplayDescriptor(screen: screen))
-    }
-
-    func selectLayout(id: String, for screen: NSScreen) {
-        let display = DisplayDescriptor(screen: screen)
-        profileStore.select(layoutID: id, for: display)
-        onStatusChange?("\(display.name): \(selectedLayout(for: screen).name)")
-    }
-
-    func saveCustomLayout(_ layout: ZoneLayout, for screen: NSScreen) {
-        profileStore.saveCustomLayout(layout)
-        selectLayout(id: layout.id, for: screen)
-    }
-
-    @discardableResult
-    func deleteCustomLayout(id: String, for screen: NSScreen) -> Bool {
-        guard profileStore.deleteCustomLayout(id: id) else { return false }
-
-        let display = DisplayDescriptor(screen: screen)
-        let fallback = profileStore.layout(for: display)
-        onStatusChange?("Deleted custom profile — using \(fallback.name)")
-        return true
     }
 }

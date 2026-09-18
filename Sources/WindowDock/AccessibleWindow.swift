@@ -1,6 +1,30 @@
 import ApplicationServices
 import Foundation
 
+/// The result of asking a window to occupy a zone.
+///
+/// Applications with a minimum window size accept the move but refuse the full
+/// resize, so the achieved frame is reported back rather than assumed.
+struct WindowPlacement {
+    let requested: CGRect
+    let achieved: CGRect
+
+    /// Whether the window ended up close enough to the zone to look docked.
+    var isExact: Bool {
+        abs(requested.origin.x - achieved.origin.x) <= 2
+            && abs(requested.origin.y - achieved.origin.y) <= 2
+            && abs(requested.size.width - achieved.size.width) <= 2
+            && abs(requested.size.height - achieved.size.height) <= 2
+    }
+
+    /// The window moved but could not shrink to the zone.
+    var isConstrainedBySize: Bool {
+        !isExact
+            && (achieved.size.width > requested.size.width + 2
+                || achieved.size.height > requested.size.height + 2)
+    }
+}
+
 final class AccessibleWindow {
     let element: AXUIElement
 
@@ -17,31 +41,59 @@ final class AccessibleWindow {
         return CGRect(origin: position, size: size)
     }
 
+    var title: String? {
+        attributeValue(for: kAXTitleAttribute) as? String
+    }
+
     var isMovableAndResizable: Bool {
         isAttributeSettable(kAXPositionAttribute) && isAttributeSettable(kAXSizeAttribute)
     }
 
-    func setFrame(_ frame: CGRect) -> Bool {
-        var position = frame.origin
-        var size = frame.size
+    var isMinimized: Bool {
+        attributeValue(for: kAXMinimizedAttribute) as? Bool ?? false
+    }
 
-        guard let positionValue = AXValueCreate(.cgPoint, &position),
-              let sizeValue = AXValueCreate(.cgSize, &size) else {
-            return false
-        }
+    /// Native full-screen windows own their whole Space and ignore position and
+    /// size changes, so docking them would silently do nothing.
+    var isFullScreen: Bool {
+        attributeValue(for: "AXFullScreen") as? Bool ?? false
+    }
 
-        let positionResult = AXUIElementSetAttributeValue(
-            element,
-            kAXPositionAttribute as CFString,
-            positionValue
-        )
-        let sizeResult = AXUIElementSetAttributeValue(
-            element,
-            kAXSizeAttribute as CFString,
-            sizeValue
-        )
+    /// Whether this window can meaningfully be docked into a zone.
+    var isDockable: Bool {
+        isMovableAndResizable && !isMinimized && !isFullScreen
+    }
 
-        return positionResult == .success && sizeResult == .success
+    /// Moves and resizes the window, then reports what actually happened.
+    ///
+    /// Position and size are applied in three steps because applications react to
+    /// the two attributes independently: some clamp a resize against the screen the
+    /// window currently occupies, and some re-anchor the window while resizing.
+    /// Setting position, then size, then position again converges for both.
+    @discardableResult
+    func setFrame(_ frame: CGRect) -> WindowPlacement? {
+        guard isMovableAndResizable else { return nil }
+
+        setPosition(frame.origin)
+        setSize(frame.size)
+        setPosition(frame.origin)
+
+        guard let achieved = self.frame else { return nil }
+        return WindowPlacement(requested: frame, achieved: achieved)
+    }
+
+    @discardableResult
+    private func setPosition(_ position: CGPoint) -> Bool {
+        var position = position
+        guard let value = AXValueCreate(.cgPoint, &position) else { return false }
+        return AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value) == .success
+    }
+
+    @discardableResult
+    private func setSize(_ size: CGSize) -> Bool {
+        var size = size
+        guard let value = AXValueCreate(.cgSize, &size) else { return false }
+        return AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value) == .success
     }
 
     private func pointValue(for attribute: String) -> CGPoint? {
@@ -106,7 +158,7 @@ enum AccessibleWindowResolver {
         for _ in 0..<12 {
             if role(of: current) == kAXWindowRole as String {
                 let window = AccessibleWindow(element: current)
-                return window.isMovableAndResizable ? window : nil
+                return window.isDockable ? window : nil
             }
 
             guard let parent = parent(of: current) else {
@@ -118,7 +170,9 @@ enum AccessibleWindowResolver {
         return focusedWindow()
     }
 
-    private static func focusedWindow() -> AccessibleWindow? {
+    /// The frontmost window of the frontmost application. Used by the keyboard
+    /// shortcuts, which have no pointer location to hit-test against.
+    static func focusedWindow() -> AccessibleWindow? {
         let systemWide = AXUIElementCreateSystemWide()
         var appValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
@@ -139,7 +193,7 @@ enum AccessibleWindowResolver {
         }
 
         let window = AccessibleWindow(element: windowElement as! AXUIElement)
-        return window.isMovableAndResizable ? window : nil
+        return window.isDockable ? window : nil
     }
 
     private static func role(of element: AXUIElement) -> String? {

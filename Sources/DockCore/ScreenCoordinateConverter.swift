@@ -23,3 +23,17 @@ public struct ScreenCoordinateConverter: Sendable {
         )
     }
 }
+
+public extension ScreenCoordinateConverter {
+    /// The inverse of `accessibilityRect(fromAppKit:)`, used to find which screen
+    /// holds a window whose frame came from the Accessibility API.
+    func appKitRect(fromAccessibility rect: CGRect) -> CGRect {
+        CGRect(
+            origin: CGPoint(
+                x: rect.origin.x,
+                y: primaryScreenTop - (rect.origin.y + rect.size.height)
+            ),
+            size: rect.size
+        )
+    }
+}

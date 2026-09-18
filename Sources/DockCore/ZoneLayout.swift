@@ -126,3 +126,62 @@ public struct ZoneLayout: Codable, Equatable, Identifiable, Sendable {
         CGRect(x: zone.x, y: zone.y, width: zone.width, height: zone.height)
     }
 }
+
+public extension ZoneLayout {
+    /// Identifier prefix that marks a layout as user-created rather than built in.
+    static let customIDPrefix = "custom-"
+
+    static func newCustomID() -> String {
+        "\(customIDPrefix)\(UUID().uuidString)"
+    }
+
+    var isCustom: Bool {
+        id.hasPrefix(Self.customIDPrefix)
+    }
+
+    var isBuiltIn: Bool {
+        Self.builtIns.contains { $0.id == id }
+    }
+
+    /// Whether every zone sits inside the unit square with a positive size.
+    var hasZonesWithinBounds: Bool {
+        zones.allSatisfy { zone in
+            zone.width > 0
+                && zone.height > 0
+                && zone.x >= -0.000_001
+                && zone.y >= -0.000_001
+                && zone.x + zone.width <= 1.000_001
+                && zone.y + zone.height <= 1.000_001
+        }
+    }
+
+    var hasUniqueZoneIDs: Bool {
+        Set(zones.map(\.id)).count == zones.count
+    }
+
+    /// A layout is usable when it has at least one in-bounds, non-overlapping zone
+    /// and a sane gap. Checked before persisting and before importing.
+    var isUsable: Bool {
+        !zones.isEmpty
+            && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && hasZonesWithinBounds
+            && hasUniqueZoneIDs
+            && overlappingZoneIDs.isEmpty
+            && gap >= 0
+            && gap <= 200
+    }
+
+    /// A copy carrying a fresh custom identifier, used by Duplicate and Import.
+    func duplicated(named newName: String? = nil) -> ZoneLayout {
+        ZoneLayout(
+            id: Self.newCustomID(),
+            name: newName ?? "\(name) Copy",
+            zones: zones,
+            gap: gap
+        )
+    }
+
+    func renamed(_ newName: String) -> ZoneLayout {
+        ZoneLayout(id: id, name: newName, zones: zones, gap: gap)
+    }
+}

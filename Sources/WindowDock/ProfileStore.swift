@@ -39,12 +39,9 @@ final class ProfileStore {
         defaults.set(selections, forKey: selectionsKey)
     }
 
-    func saveCustomLayout(_ layout: ZoneLayout) {
-        guard layout.id.hasPrefix("custom-"),
-              !layout.zones.isEmpty,
-              layout.overlappingZoneIDs.isEmpty else {
-            return
-        }
+    @discardableResult
+    func saveCustomLayout(_ layout: ZoneLayout) -> Bool {
+        guard layout.isCustom, layout.isUsable else { return false }
 
         if let index = customLayouts.firstIndex(where: { $0.id == layout.id }) {
             customLayouts[index] = layout
@@ -53,6 +50,20 @@ final class ProfileStore {
         }
 
         persistCustomLayouts()
+        return true
+    }
+
+    /// Adds imported profiles. The caller is responsible for giving them fresh
+    /// identifiers; `LayoutArchive.importableLayouts(alongside:)` does that.
+    @discardableResult
+    func addCustomLayouts(_ layouts: [ZoneLayout]) -> Int {
+        let existingIDs = Set(customLayouts.map(\.id))
+        let accepted = layouts.filter { $0.isCustom && $0.isUsable && !existingIDs.contains($0.id) }
+        guard !accepted.isEmpty else { return 0 }
+
+        customLayouts.append(contentsOf: accepted)
+        persistCustomLayouts()
+        return accepted.count
     }
 
     @discardableResult

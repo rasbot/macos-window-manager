@@ -63,3 +63,15 @@ import Testing
     )
     #expect(overlapping.overlappingZoneIDs == Set([1, 2]))
 }
+
+@Test func accessibilityConversionRoundTripsBackToAppKit() {
+    let converter = ScreenCoordinateConverter(primaryScreenTop: 1080)
+    let appKitFrame = CGRect(x: 50, y: 80, width: 400, height: 300)
+
+    let accessibilityFrame = converter.accessibilityRect(fromAppKit: appKitFrame)
+    #expect(converter.appKitRect(fromAccessibility: accessibilityFrame) == appKitFrame)
+
+    // A window pinned to the top of the primary display converts to y = 0.
+    let topFrame = CGRect(x: 0, y: 780, width: 400, height: 300)
+    #expect(converter.accessibilityRect(fromAppKit: topFrame).origin.y == 0)
+}

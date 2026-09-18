@@ -1,6 +1,9 @@
 import AppKit
+import DockCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let controller = DockController()
+    private let hotkeys = HotkeyCenter()
     private var dragMonitor: WindowDragMonitor?
     private var menuBarController: MenuBarController?
     private var authorizationTimer: Timer?
@@ -28,9 +31,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         NSApp.setActivationPolicy(.accessory)
-        let monitor = WindowDragMonitor()
+        let monitor = WindowDragMonitor(controller: controller)
         dragMonitor = monitor
-        menuBarController = MenuBarController(dragMonitor: monitor)
+        menuBarController = MenuBarController(controller: controller, dragMonitor: monitor, hotkeys: hotkeys)
+
+        configureHotkeys()
+        observeDisplayChanges()
 
         if !AccessibilityPermission.isGranted {
             AccessibilityPermission.request()
@@ -40,7 +46,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         authorizationTimer?.invalidate()
+        hotkeys.unregisterAll()
         dragMonitor?.stop()
+    }
+
+    private func configureHotkeys() {
+        hotkeys.onAction = { [weak self] action in
+            guard let self else { return }
+            switch action {
+            case .dockZone(let number):
+                self.controller.dockFocusedWindow(toZoneNumber: number)
+            case .move(let direction):
+                self.controller.moveFocusedWindow(direction)
+            case .undo:
+                self.controller.undoLastDock()
+            }
+        }
+
+        guard controller.settings.areKeyboardShortcutsEnabled else { return }
+        let failures = hotkeys.register()
+        if failures > 0 {
+            controller.report("\(failures) keyboard shortcut(s) are already in use by another app")
+        }
+    }
+
+    /// Plugging in or removing a display invalidates overlay panels and any
+    /// remembered window frames, so both are dropped when the arrangement changes.
+    private func observeDisplayChanges() {
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.dragMonitor?.cancelActiveDrag()
+            self?.controller.displayArrangementChanged()
+        }
     }
 
     private func startMonitoringWhenAuthorized(_ monitor: WindowDragMonitor) {

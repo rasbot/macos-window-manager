@@ -11,10 +11,10 @@ final class ZoneEditorWindowController: NSWindowController {
         createNewProfile: Bool = false,
         onSave: @escaping (ZoneLayout) -> Void
     ) {
-        let isBuiltIn = ZoneLayout.builtIns.contains(where: { $0.id == layout.id })
+        let isBuiltIn = layout.isBuiltIn
         let isCreating = createNewProfile || isBuiltIn
         let draft = ZoneLayout(
-            id: isCreating ? "custom-\(UUID().uuidString)" : layout.id,
+            id: isCreating ? ZoneLayout.newCustomID() : layout.id,
             name: isCreating
                 ? (isBuiltIn ? "\(layout.name) Custom" : "\(layout.name) Copy")
                 : layout.name,
